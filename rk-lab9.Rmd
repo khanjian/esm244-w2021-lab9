@@ -1,0 +1,285 @@
+---
+title: "Lab 9"
+subtitle
+author: "Roupen Khanjian"
+date: "Winter 2021"
+output: 
+  html_document:
+    theme: darkly
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      warning = FALSE,
+                      message = FALSE)
+
+library(tidyverse)
+library(here)
+library(boot)
+library(gt)
+library(patchwork)
+library(broom)
+library(nlstools)
+```
+
+## gt package to make tables
+
+
+Use `LifeCycleSavings` dataset. Used this in 126.
+
+Wrangle data a bit. 
+
+```{r}
+disp_income <- LifeCycleSavings %>% 
+  rownames_to_column() %>% 
+  arrange(dpi) %>% 
+  head(5) %>% 
+  mutate(ddpi = ddpi /100,
+         pop15 = pop15 /100,
+         pop75 = pop75 / 100) # To make it a decimal (we'll convert to a percentage in the table for more practice)
+```
+
+Make table with following goals:
+
+* percent variables should be in % format
+* per capita disposable income should be in dollars
+* color of dpi cells should change based on value
+
+
+
+```{r}
+
+disp_income %>% 
+  gt() %>% 
+  tab_header(
+    title = "Life Cycle Savings",
+    subtitle = "5 countries with lowest per capita disposable income"
+  ) %>% 
+  fmt_currency(
+    columns = vars(dpi),
+    decimals = 2
+  ) %>% 
+  fmt_percent(
+    columns = vars(pop15, pop75, ddpi),
+    decimals = 1
+  ) %>% 
+  fmt_number(
+    columns = vars(sr),
+    decimals = 1
+  ) %>% 
+  tab_options(
+    table.width = pct(80) # update table width
+  ) %>% 
+  tab_footnote(
+    footnote = "Data averaged from 1970 - 1980",
+    location = cells_title()
+  ) %>% 
+  data_color(
+    columns = vars(dpi),
+    colors = scales::col_numeric(
+      palette = c(
+        "orange", "red", "purple"),
+      domain = c(120, 190) # scale endpoints, outside will be gray
+      )
+    ) %>% 
+  cols_label(
+     sr = "Savings ratio",
+    pop15 = "Pop < 15yr",
+    pop75 = "Pop < 75yr",
+    dpi = "Disposable $ per capita",
+    ddpi = "Disposable percent"
+  )
+
+# my god gt is so cool. 
+
+```
+
+## part 2 : bootstrapping
+
+Bootstrapping uses sampling with replacement to find a sampling distribtuion that is based on more than a single sample. Lets bootstrap a 95% CI for the mean salinity of river discharge in Pamlico sound.
+
+```{r}
+
+hist(salinity$sal)
+mean(salinity$sal)
+
+```
+
+Always ask:
+
+*How are the data distributed
+* do we thhink the mean is a valid metric for central tendancy (if skewed data probs not)
+* whats our sample size?
+* any outliers or anomalies
+* what assumptions do we make if we find the CI based on a single sample using the t-dist here?
+
+```{r}
+#create function that will calculate the mean of each bootstrapped sample
+
+mean_fun <- function(x, i) {
+  mean(x[i])
+}
+
+sal_nc <- salinity$sal
+
+# 100 bootstrap sanples
+salboot100 <- boot(sal_nc,
+                   statistic = mean_fun,
+                   R = 100)
+
+salboot_10k <- boot(
+  sal_nc,
+  statistic = mean_fun,
+  R = 10000
+)
+
+salboot100
+salboot_10k
+
+sort(salboot100$t)
+
+```
+
+Plot histograms
+
+```{r}
+# Make vectors of bootstrap sample means a data frame (so ggplot will deal with it). 
+salboot_100_df <- data.frame(bs_mean = salboot100$t)
+salboot_10k_df <- data.frame(bs_mean = salboot_10k$t)
+
+# ggplot the bootstrap sample medians: 
+
+# The histogram of the original sample:
+p1 <- ggplot(data = salinity, aes(x = sal)) +
+  geom_histogram()
+
+# Histogram of 100 bootstrap sample means:
+p2 <- ggplot(data = salboot_100_df, aes(x = bs_mean)) +
+  geom_histogram()
+
+# Histogram of 10k bootstrap sample means:
+p3 <- ggplot(data = salboot_10k_df, aes(x = bs_mean)) +
+  geom_histogram()
+
+# Aside: remember that {patchwork} is awesome. 
+(p1 + p2 + p3) & theme_minimal()
+```
+
+Making bootstrap ci's
+
+```{r}
+
+boot.ci(salboot_10k, conf = 0.95)
+
+```
+
+## part 3 nonlinear least sqaures
+
+```{r}
+
+df <- read_csv(here("data", "log_growth.csv"))
+
+# plot it
+ggplot(df,
+       aes(x = time, y = pop)) +
+  geom_point() +
+  geom_hline(yintercept = 180) + # looks like this is the carrying capacity (180)
+  theme_minimal() +
+  labs(x = "time (hr)",
+       y = "population (ind)")
+
+# Look at the log transformed data:
+ggplot(data = df, aes(x = time, y = log(pop))) +
+  geom_point() +
+  theme_minimal() +
+  labs(x = "time (hr)", y = "ln(population)")
+
+
+```
+
+Remeebr logistic growth equations
+
+### find initial estimates for K, A, and k
+
+estimate the growth constant during exponential phase 
+
+```{r}
+# only get up to 14 hours and log transform
+# do this so we can estimate the growth rate constant (k)
+df_exp <- df %>% 
+  filter(time < 15) %>% 
+  mutate(ln_pop = log(pop))
+
+
+lm_k <- lm(ln_pop ~ time,
+         data = df_exp)
+lm_k
+
+
+
+```
+
+Now we have initial estimate for k (0.17), and we can estimate K  ~ 180 and A ~ 17. We need those estimates because we will use them as starting points for interative algorithms trying to converge on the parameters. If we’re too far off, they may not converge or could converge on the very wrong thing.
+
+We’ll estimate the parameters using nonlinear least squares (NLS):
+
+### nonlinear least sqaures
+
+nonlinear least sqaures conversgers on parameter estimates that minimizes the sum of sqaures of residuals through an interative algo
+( well use gauss-newton, the most common algo)
+
+`nls`
+
+```{r}
+
+df_nls <- nls(pop ~ K / (1 + A*exp(-r*time)),
+              data = df,
+              start = list(K = 190, A = 17, r = 0.17),
+              trace = TRUE)
+
+
+summary(df_nls)
+
+```
+
+broom it
+
+```{r}
+model_out <- broom::tidy(df_nls)
+
+model_out
+
+model_out[2]
+
+
+```
+
+
+Visualize over our original data
+
+```{r}
+
+p_predict <- predict(df_nls)
+p_predict <- augment(df_nls) %>% 
+  select(.fitted) %>% 
+  unlist() # same as above
+
+df_complete <- data.frame(df, p_predict)
+
+ggplot(data = df_complete,
+       aes(x = time, y = pop)) +
+  geom_point() +
+  geom_line(aes(x = time, y = p_predict)) +
+  theme_minimal()
+
+```
+
+
+```{r}
+
+df_ci <- confint(df_nls)
+df_ci
+
+
+```
+
