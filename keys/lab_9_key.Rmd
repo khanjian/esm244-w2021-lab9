@@ -1,7 +1,9 @@
 ---
 title: "Lab 9: Bootstrapping, nonlinear least squares, and customizing tables with gt"
 author: "Allison Horst"
-output: html_document
+output: 
+  html_document:
+    theme: darkly
 ---
 
 ```{r setup, include=FALSE}
@@ -29,7 +31,7 @@ We'll use the `LifeCycleSavings` built-in dataset. See `?LifeCycleSavings` for m
 Simplify the data a bit to get the 5 countries with the lowest savings ratio:
 
 ```{r}
-
+# new
 disp_income <- LifeCycleSavings %>% 
   rownames_to_column() %>% 
   arrange(dpi) %>% 
